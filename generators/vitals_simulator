@@ -1,0 +1,176 @@
+import math
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
+
+@dataclass
+class VitalsConfig:
+    """
+    Configuration for synthetic vital signs time-series generation
+    with realistic overlap and intra-patient dynamics.
+    """
+    n_points: int = 300
+    step_seconds: int = 2
+
+    # Measurement imperfections
+    missing_rate: float = 0.03
+    artifact_rate: float = 0.02
+
+    # Severity dynamics (random walk)
+    severity_start_mean: float = 0.3
+    severity_start_std: float = 0.15
+    severity_drift_std: float = 0.02           # random walk step
+    deterioration_jump_prob: float = 0.01      # rare worsening events
+    deterioration_jump_scale: float = 0.25     # jump magnitude
+    improvement_jump_prob: float = 0.005       # rare recovery events
+    improvement_jump_scale: float = 0.15       # jump magnitude
+
+
+def _clip(value: float, min_value: float, max_value: float) -> float:
+    return float(max(min_value, min(max_value, value)))
+
+
+def compute_risk_level_from_vitals(hr: float, spo2: float, sbp: float, dbp: float) -> int:
+    """
+    Rule-based triage label computed from vitals (ground truth).
+    This avoids the 'class -> distribution' shortcut.
+    """
+    # Critical thresholds
+    if (spo2 < 90) or (sbp < 90) or (hr >= 140):
+        return 2
+
+    # Elevated risk thresholds
+    if (spo2 < 94) or (sbp >= 140) or (hr >= 110):
+        return 1
+
+    return 0
+
+
+def sample_vitals_from_severity(severity: float) -> Tuple[float, float, float, float]:
+    """
+    Generate vitals from continuous severity in [0, 1] with overlap.
+
+    severity=0 -> mostly normal
+    severity=1 -> strongly abnormal, but still with noise/overlap
+    """
+    s = _clip(severity, 0.0, 1.0)
+
+    # Base (healthy-ish) levels
+    hr_base = 78
+    spo2_base = 97
+    sbp_base = 122
+    dbp_base = 80
+
+    # Effects of severity (directional changes)
+    # HR increases, SpO2 decreases, SBP drifts down (shock-like), DBP drifts down
+    hr = np.random.normal(hr_base + 55 * s, 10 + 8 * s)
+    spo2 = np.random.normal(spo2_base - 12 * s, 2 + 2.5 * s)
+    sbp = np.random.normal(sbp_base - 45 * s, 12 + 10 * s)
+    dbp = np.random.normal(dbp_base - 25 * s, 7 + 6 * s)
+
+    # Clip to physiological ranges
+    hr = _clip(hr, 30, 220)
+    spo2 = _clip(spo2, 50, 100)
+    sbp = _clip(sbp, 50, 250)
+    dbp = _clip(dbp, 30, 150)
+
+    return float(hr), float(spo2), float(sbp), float(dbp)
+
+
+def simulate_patient_stream(
+    patient_id: int,
+    config: Optional[VitalsConfig] = None,
+    start_time: Optional[datetime] = None,
+) -> pd.DataFrame:
+    """
+    Generate a patient stream with severity dynamics.
+    Labels are computed from vitals (triage rules), not pre-assigned.
+    """
+    if config is None:
+        config = VitalsConfig()
+    if start_time is None:
+        start_time = datetime.now()
+
+    rows: List[dict] = []
+    current_time = start_time
+
+    # Initial severity (patient baseline)
+    severity = float(np.random.normal(config.severity_start_mean, config.severity_start_std))
+    severity = _clip(severity, 0.0, 1.0)
+
+    for _ in range(config.n_points):
+        # Random walk drift
+        severity += float(np.random.normal(0.0, config.severity_drift_std))
+
+        # Rare jumps (deterioration / improvement)
+        if np.random.rand() < config.deterioration_jump_prob:
+            severity += float(np.random.exponential(config.deterioration_jump_scale))
+        if np.random.rand() < config.improvement_jump_prob:
+            severity -= float(np.random.exponential(config.improvement_jump_scale))
+
+        severity = _clip(severity, 0.0, 1.0)
+
+        hr, spo2, sbp, dbp = sample_vitals_from_severity(severity)
+
+        # Sensor artifacts (outliers)
+        if np.random.rand() < config.artifact_rate:
+            hr *= np.random.uniform(0.6, 1.6)
+            spo2 *= np.random.uniform(0.7, 1.05)
+            sbp *= np.random.uniform(0.6, 1.4)
+            dbp *= np.random.uniform(0.6, 1.4)
+
+        # Missing values
+        if np.random.rand() < config.missing_rate:
+            if np.random.rand() < 0.5:
+                hr = math.nan
+            else:
+                spo2 = math.nan
+
+        # Compute label from vitals (ground truth)
+        # If missing values exist, we compute label after filling in preprocessing,
+        # but here we can approximate: treat NaNs as "unknown" and label conservatively.
+        hr_for_label = hr if not math.isnan(hr) else 100.0
+        spo2_for_label = spo2 if not math.isnan(spo2) else 95.0
+        sbp_for_label = sbp
+        dbp_for_label = dbp
+
+        risk_level = compute_risk_level_from_vitals(hr_for_label, spo2_for_label, sbp_for_label, dbp_for_label)
+
+        rows.append(
+            {
+                "patient_id": patient_id,
+                "timestamp": current_time,
+                "severity": severity,
+                "risk_level": risk_level,
+                "heart_rate": hr,
+                "spo2": spo2,
+                "sbp": sbp,
+                "dbp": dbp,
+            }
+        )
+
+        current_time += timedelta(seconds=config.step_seconds)
+
+    return pd.DataFrame(rows)
+
+
+def generate_dataset(
+    n_patients: int = 150,
+    config: Optional[VitalsConfig] = None,
+) -> pd.DataFrame:
+    """
+    Generate a dataset with many patients.
+    Patients will naturally produce mixed risk levels over time.
+    """
+    if config is None:
+        config = VitalsConfig()
+
+    dfs: List[pd.DataFrame] = []
+    for pid in range(1, n_patients + 1):
+        dfs.append(simulate_patient_stream(patient_id=pid, config=config))
+
+    return pd.concat(dfs, ignore_index=True)
