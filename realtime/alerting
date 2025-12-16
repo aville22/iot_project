@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import time
+from typing import Dict, Optional
+
+
+@dataclass
+class AlertConfig:
+    """
+    Alert policy configuration (IoT-style).
+    """
+    warn_level: int = 1
+    crit_level: int = 2
+
+    # Require repeated confirmations to change state (anti-flapping)
+    confirm_warn: int = 2
+    confirm_crit: int = 2
+    confirm_clear: int = 3
+
+    # Cooldown to suppress repeated identical alerts
+    cooldown_sec: float = 10.0
+
+
+class AlertManager:
+    """
+    Stateful alerting with hysteresis and cooldown.
+
+    States:
+      - "NORMAL"
+      - "WARN"
+      - "CRITICAL"
+    """
+
+    def __init__(self, cfg: Optional[AlertConfig] = None):
+        self.cfg = cfg or AlertConfig()
+
+        self.state = "NORMAL"
+        self._crit_streak = 0
+        self._warn_streak = 0
+        self._clear_streak = 0
+
+        self._last_emit_ts = 0.0
+        self._last_emit_kind = None  # e.g. "WARN_ON", "CRIT_ON", "CLEAR"
+
+    def update(self, risk_level: int, now_ts: Optional[float] = None) -> Dict:
+        """
+        Update alert state with the new risk_level.
+        Returns an event dict describing state and optional emitted alert.
+        """
+        if now_ts is None:
+            now_ts = time.time()
+
+        emitted = None
+
+        # Update streaks
+        if risk_level >= self.cfg.crit_level:
+            self._crit_streak += 1
+            self._warn_streak = 0
+            self._clear_streak = 0
+        elif risk_level >= self.cfg.warn_level:
+            self._warn_streak += 1
+            self._crit_streak = 0
+            self._clear_streak = 0
+        else:
+            self._clear_streak += 1
+            self._crit_streak = 0
+            self._warn_streak = 0
+
+        # Transition logic with hysteresis
+        prev_state = self.state
+
+        if self.state != "CRITICAL" and self._crit_streak >= self.cfg.confirm_crit:
+            self.state = "CRITICAL"
+            emitted = "CRIT_ON"
+
+        elif self.state == "NORMAL" and self._warn_streak >= self.cfg.confirm_warn:
+            self.state = "WARN"
+            emitted = "WARN_ON"
+
+        elif self.state in ("WARN", "CRITICAL") and self._clear_streak >= self.cfg.confirm_clear:
+            self.state = "NORMAL"
+            emitted = "CLEAR"
+
+        # Cooldown suppression for repeated same alert kind
+        if emitted is not None:
+            if emitted == self._last_emit_kind and (now_ts - self._last_emit_ts) < self.cfg.cooldown_sec:
+                emitted = None
+            else:
+                self._last_emit_kind = emitted
+                self._last_emit_ts = now_ts
+
+        return {
+            "prev_state": prev_state,
+            "state": self.state,
+            "emitted": emitted,  # None or one of: WARN_ON, CRIT_ON, CLEAR
+            "streaks": {
+                "crit": self._crit_streak,
+                "warn": self._warn_streak,
+                "clear": self._clear_streak,
+            },
+        }
