@@ -1,3 +1,6 @@
+# realtime/edge.py
+from __future__ import annotations
+
 import time
 from typing import Dict, Tuple, Optional
 
@@ -7,12 +10,12 @@ from realtime.validation import ValidationConfig, validate_and_sanitize
 
 class EdgeNode:
     """
-    Edge node: cleans raw events and produces information arrays.
-    Supports per-patient sliding windows (important for multi-patient mode).
+    Edge node: cleans raw events and produces information arrays (feature dicts).
+    Per-patient sliding windows.
     """
 
     def __init__(self, window_cfg: Optional[WindowConfig] = None, vcfg: Optional[ValidationConfig] = None):
-        self.window_cfg = window_cfg or WindowConfig(window_sec=30.0, min_samples=10)
+        self.window_cfg = window_cfg or WindowConfig(window_sec=30.0, step_sec=5.0, min_samples=10)
         self.vcfg = vcfg or ValidationConfig(max_clock_skew_sec=5.0, clamp_values=True, drop_on_invalid=False)
 
         # Per-patient window processors
@@ -41,9 +44,9 @@ class EdgeNode:
 
         clean, meta = validate_and_sanitize(event, now_ts=now_ts, cfg=self.vcfg)
 
-        if meta["late"]:
+        if meta.get("late"):
             self.stats["late"] += 1
-        self.stats["corrected_fields"] += int(meta["corrected_fields"])
+        self.stats["corrected_fields"] += int(meta.get("corrected_fields", 0))
 
         if clean is None:
             self.stats["dropped"] += 1
@@ -52,11 +55,12 @@ class EdgeNode:
         patient_id = int(clean["patient_id"])
         wp = self._get_wp(patient_id)
 
-        wp.add_event(clean)
-        if not wp.ready():
+        # NEW: single call that both buffers and (optionally) emits features
+        info = wp.push(clean)
+        if info is None:
             return None, meta
 
-        info = wp.aggregate()
+        # Keep compatibility with downstream code
         info["edge_ts"] = time.time()
         info["patient_id"] = patient_id
 
