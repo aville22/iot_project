@@ -65,27 +65,30 @@ IoT Sensors → Event Stream → Edge Node → Cloud Node → Alerts & Metrics
 ---
 
 ## Project Structure
+
+```text
 iot_project/
-├── main_realtime_multi_demo.py # Multi-patient real-time demo
-├── main_train_model.py # Model training
+├── main_realtime_multi_demo.py   # Multi-patient real-time demo
+├── main_train_model.py           # Model training
 ├── realtime/
-│ ├── sensor.py # IoT sensor simulation + fault injection
-│ ├── stream.py # Event stream abstraction
-│ ├── validation.py # Event validation and sanitization
-│ ├── processor.py # Sliding window aggregation (features)
-│ ├── edge.py # Edge node logic
-│ ├── decision.py # ML inference
-│ ├── cloud.py # Cloud-side processing
-│ ├── alerting.py # Alert generation
-│ ├── metrics.py # Latency tracking
-│ └── report.py # Run report generation
+│   ├── sensor.py                 # IoT sensor simulation + fault injection
+│   ├── stream.py                 # Event stream abstraction
+│   ├── validation.py             # Event validation and sanitization
+│   ├── processor.py              # Sliding window aggregation (features)
+│   ├── edge.py                   # Edge node logic
+│   ├── decision.py               # ML inference
+│   ├── cloud.py                  # Cloud-side processing
+│   ├── alerting.py               # Alert generation
+│   ├── metrics.py                # Latency tracking
+│   └── report.py                 # Run report generation
 ├── models/
-│ └── train.py # Training pipeline
+│   └── train.py                  # Training pipeline
 ├── data/
-│ ├── metrics.json # Feature schema and evaluation metrics
-│ └── rf_model.joblib # Pretrained demo model
+│   ├── metrics.json              # Feature schema and evaluation metrics
+│   └── rf_model.joblib           # Pretrained demo model
 ├── requirements.txt
 └── README.md
+```
 
 ---
 
